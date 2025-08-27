@@ -10,33 +10,40 @@ export default async function handler(req, res) {
     return res.status(405).json({ message: 'Method not allowed' });
   }
 
-  // ✅ 1. استقبال اللغة من الطلب
   const { ingredientsText, language } = req.body;
 
   if (!ingredientsText) {
     return res.status(400).json({ message: 'Ingredients text is required' });
   }
 
-  // ✅ 2. تحديد لغة الرد بناءً على المدخلات
   const responseLanguage = language === 'ar' ? 'Arabic' : 'English';
 
   try {
-    // ✅ 3. تحديث البرومبت ليكون ديناميكيًا
-    const prompt = `You are an expert in gluten allergies and celiac disease. Analyze the following ingredients list accurately. Look for any explicit gluten source, an ingredient that might be derived from a gluten source, or any cross-contamination warnings.
-    
-    Respond ONLY with a JSON object in the following format. The explanation must be in ${responseLanguage}.
-    {
-      "verdict": "one of these values: 'contains_gluten', 'may_contain_gluten', 'appears_gluten_free'",
-      "criticalIngredient": "the most critical ingredient you based your decision on, or 'N/A' if it is safe",
-      "explanation": "Explain the reason clearly and simply in ${responseLanguage}"
-    }
-    
-    Ingredients list:
-    "${ingredientsText}"`;
+    // ✅ 1. استخدام مصفوفة الرسائل (System & User) للتحكم الدقيق
+    const messages = [
+      {
+        role: "system",
+        content: `You are a food allergen expert. Your primary function is to analyze ingredient lists for gluten. You must respond ONLY in a specific JSON format. Your response language MUST strictly be the one specified by the user and should NOT be influenced by the language of the ingredients list.`
+      },
+      {
+        role: "user",
+        content: `Analyze the following ingredients list. Your entire JSON response, especially the 'explanation' field, MUST be in ${responseLanguage}.
+
+Ingredients: "${ingredientsText}"
+
+Respond with a JSON object following this exact structure:
+{
+  "verdict": "one of 'contains_gluten', 'may_contain_gluten', 'appears_gluten_free'",
+  "criticalIngredient": "The most critical ingredient that determined the verdict, or 'N/A' if safe.",
+  "explanation": "A simple, one-sentence explanation written in ${responseLanguage}."
+}`
+      }
+    ];
 
     const response = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: [{ role: 'user', content: prompt }],
+      // ✅ 2. تمرير مصفوفة الرسائل الجديدة
+      messages: messages,
       response_format: { type: "json_object" },
     });
 
