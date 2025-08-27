@@ -8,6 +8,10 @@ function detectArabic(text = '') {
   return /[\u0600-\u06FF]/.test(text);
 }
 
+function isEnglishOnly(str = '') {
+  return /^[\x00-\x7F\s]+$/.test(str);
+}
+
 function resolveLanguage(reqBody = {}, headers = {}) {
   const lang = (reqBody.language || '').toLowerCase();
 
@@ -31,14 +35,14 @@ function buildMessages(lang, ingredientsText) {
       {
         role: 'system',
         content:
-          'أنت خبير في مسببات الحساسية الغذائية. تُحلّل قوائم المكوّنات بحثًا عن الغلوتين. ' +
-          'أعد استجابة JSON فقط، وأبقِ أسماء المفاتيح بالإنجليزية (verdict, criticalIngredient, explanation). ' +
-          'كل القيم النصّية يجب أن تكون بالعربية لا غير.'
+          'أنت خبير في مسببات الحساسية الغذائية. تحلل قوائم المكونات لاكتشاف الغلوتين. ' +
+          'أعد استجابة JSON فقط. أسماء المفاتيح بالإنجليزية (verdict, criticalIngredient, explanation). ' +
+          'كل القيم النصية يجب أن تكون بالعربية حصراً.'
       },
       {
         role: 'user',
         content:
-`حلّل قائمة المكوّنات التالية، وأعد **JSON فقط** بالقالب التالي (المفاتيح إنجليزية، القيم نصية بالعربية):
+`حلّل قائمة المكوّنات التالية، وأعد **JSON فقط** بالقالب التالي (المفاتيح إنجليزية، والقيم بالعربية):
 
 Ingredients: "${ingredientsText}"
 
@@ -46,7 +50,7 @@ Return exactly:
 {
   "verdict": "one of 'contains_gluten', 'may_contain_gluten', 'appears_gluten_free'",
   "criticalIngredient": "أهم مكوّن أثّر على الحكم، أو 'N/A' إذا آمن.",
-  "explanation": "جملة واحدة بسيطة بالعربية تبرّر الحكم."
+  "explanation": "جملة واحدة قصيرة بالعربية تبرّر الحكم."
 }`
       }
     ];
@@ -58,13 +62,13 @@ Return exactly:
       role: 'system',
       content:
         'You are a food allergen expert. Analyze ingredient lists for gluten. ' +
-        'Return JSON only, keep keys in English (verdict, criticalIngredient, explanation). ' +
-        'All string values MUST be in English only.'
+        'Return JSON only. Keep keys in English (verdict, criticalIngredient, explanation). ' +
+        'All string values MUST be strictly in English only.'
     },
     {
       role: 'user',
       content:
-`Analyze the ingredients and return **JSON only** (keys in English, string values in English).
+`Analyze the ingredients and return **JSON only** with the exact shape below (keys in English; string values in English).
 
 Ingredients: "${ingredientsText}"
 
@@ -78,60 +82,43 @@ Return exactly:
   ];
 }
 
-/**
- * خيار A: JSON Schema مع قيد لغوي
- * - en: نطلب explanation ASCII فقط.
- * - ar: نتحقق لاحقًا بحارس الخادم إن حبيت (أقل حاجة).
- */
-function buildResponseFormat(lang) {
+// يلقط أول كائن JSON صالح من النص (حتى لو كان داخل ``` أو فيه أسطر زائدة)
+function extractJsonObject(str = '') {
+  // أسرع محاولة مباشرة:
+  try { return JSON.parse(str); } catch (_) {}
+
+  // التقط أول {...} كبير
+  const match = str.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try { return JSON.parse(match[0]); } catch (_) { return null; }
+}
+
+// توليد جملة محلية (بدون اتصال خارجي) تضمن اللغة المطلوبة
+function normalizeExplanation(verdict, critical, lang) {
+  const crit = (typeof critical === 'string' && critical.trim() && critical !== 'N/A')
+    ? critical.trim()
+    : null;
+
   if (lang === 'en') {
-    return {
-      type: 'json_schema',
-      json_schema: {
-        name: 'gluten_analysis',
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['verdict', 'criticalIngredient', 'explanation'],
-          properties: {
-            verdict: { type: 'string', enum: ['contains_gluten', 'may_contain_gluten', 'appears_gluten_free'] },
-            criticalIngredient: { type: 'string' },
-            // ASCII-only to deter Arabic letters when English is requested
-            explanation: { type: 'string', pattern: '^[\\x00-\\x7F\\s]+$' }
-          }
-        },
-        strict: true
-      }
-    };
+    switch (verdict) {
+      case 'contains_gluten':
+        return `This product contains ${crit || 'gluten'}.`;
+      case 'may_contain_gluten':
+        return `This product may contain traces of gluten due to potential cross-contamination.`;
+      default:
+        return `No gluten ingredients were found in the list.`;
+    }
   }
 
-  // للعربية نترك الـ schema بدون pattern،
-  // ونعتمد على الحارس لاحقًا إذا لزم.
-  return {
-    type: 'json_schema',
-    json_schema: {
-      name: 'gluten_analysis',
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['verdict', 'criticalIngredient', 'explanation'],
-        properties: {
-          verdict: { type: 'string', enum: ['contains_gluten', 'may_contain_gluten', 'appears_gluten_free'] },
-          criticalIngredient: { type: 'string' },
-          explanation: { type: 'string' }
-        }
-      },
-      strict: true
-    }
-  };
-}
-
-// خيار B: حارس يتحقق من اللغة بعد الاستلام
-function isEnglishOnly(str = '') {
-  return /^[\x00-\x7F\s]+$/.test(str);
-}
-function containsArabic(str = '') {
-  return /[\u0600-\u06FF]/.test(str);
+  // ar
+  switch (verdict) {
+    case 'contains_gluten':
+      return `هذا المنتج يحتوي على ${crit || 'الغلوتين'}.`;
+    case 'may_contain_gluten':
+      return `قد يحتوي هذا المنتج على آثار من الغلوتين بسبب احتمال التلوث الخلطي.`;
+    default:
+      return `لم تُرصد مكوّنات تحتوي على الغلوتين في القائمة.`;
+  }
 }
 
 export default async function handler(req, res) {
@@ -144,53 +131,49 @@ export default async function handler(req, res) {
 
   const lang = resolveLanguage(req.body, req.headers);
   const messages = buildMessages(lang, ingredientsText);
-  const response_format = buildResponseFormat(lang);
 
   try {
     const response = await openai.chat.completions.create({
       model: 'gpt-4o',
       messages,
       temperature: 0,
-      response_format, // خيار A: schema
+      // ملاحظة: بعض إصدارات chat.completions قد تتجاهل response_format.
+      // لذلك نعتمد على extractJsonObject + الحارس لاحقًا.
+      // response_format: { type: 'json_object' },
     });
 
-    const content = response.choices?.[0]?.message?.content?.trim() || '{}';
-    let aiResult = JSON.parse(content);
+    const raw = response.choices?.[0]?.message?.content ?? '';
+    let ai = extractJsonObject(raw) || {};
 
-    // حراسة verdict
     const allowed = new Set(['contains_gluten', 'may_contain_gluten', 'appears_gluten_free']);
-    if (!allowed.has(aiResult?.verdict)) aiResult.verdict = 'appears_gluten_free';
+    const verdict = allowed.has(ai.verdict) ? ai.verdict : 'appears_gluten_free';
+    const criticalIngredient =
+      typeof ai.criticalIngredient === 'string' && ai.criticalIngredient.trim()
+        ? ai.criticalIngredient.trim()
+        : 'N/A';
+    let explanation =
+      typeof ai.explanation === 'string' && ai.explanation.trim()
+        ? ai.explanation.trim()
+        : '';
 
-    // خيار B: حارس لغوي إضافي (يعمل حتى لو schema تساهل أو النموذج تحايل)
+    // حارس اللغة النهائي (بدون نداء API ثانٍ):
     if (lang === 'en') {
-      if (!isEnglishOnly(aiResult?.explanation)) {
-        // إصلاح سريع: إعادة صياغة explanation للإنجليزية فقط
-        const fix = await openai.chat.completions.create({
-          model: 'gpt-4o',
-          temperature: 0,
-          messages: [
-            { role: 'system', content: 'Rewrite the user text strictly in English (ASCII only). Return only the rewritten sentence.' },
-            { role: 'user', content: String(aiResult?.explanation || '') }
-          ]
-        });
-        aiResult.explanation = fix.choices?.[0]?.message?.content?.trim() || 'Analysis in English.';
+      if (!isEnglishOnly(explanation)) {
+        explanation = normalizeExplanation(verdict, criticalIngredient, 'en');
       }
-    } else if (lang === 'ar') {
-      // لو رجع إنجليزي بالغلط، نعيد صياغته للعربية
-      if (!containsArabic(aiResult?.explanation)) {
-        const fix = await openai.chat.completions.create({
-          model: 'gpt-4o',
-          temperature: 0,
-          messages: [
-            { role: 'system', content: 'أعد صياغة النص التالي بالعربية الفصحى بجملة واحدة فقط. أعد الجملة فقط.' },
-            { role: 'user', content: String(aiResult?.explanation || '') }
-          ]
-        });
-        aiResult.explanation = fix.choices?.[0]?.message?.content?.trim() || 'تحليل بالعربية.';
+    } else { // ar
+      if (!detectArabic(explanation)) {
+        explanation = normalizeExplanation(verdict, criticalIngredient, 'ar');
       }
     }
 
-    return res.status(200).json({ ...aiResult, lang });
+    return res.status(200).json({
+      verdict,
+      criticalIngredient,
+      explanation,
+      lang,
+    });
+
   } catch (error) {
     console.error(error);
     return res.status(500).json({ message: 'Error analyzing ingredients' });
