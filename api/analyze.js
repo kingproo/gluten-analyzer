@@ -2,7 +2,7 @@
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY, // مفتاح API يُقرأ من متغيرات البيئة
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 export default async function handler(req, res) {
@@ -10,23 +10,28 @@ export default async function handler(req, res) {
     return res.status(405).json({ message: 'Method not allowed' });
   }
 
-  const { ingredientsText } = req.body;
+  // ✅ 1. استقبال اللغة من الطلب
+  const { ingredientsText, language } = req.body;
 
   if (!ingredientsText) {
     return res.status(400).json({ message: 'Ingredients text is required' });
   }
 
+  // ✅ 2. تحديد لغة الرد بناءً على المدخلات
+  const responseLanguage = language === 'ar' ? 'Arabic' : 'English';
+
   try {
-    const prompt = `أنت خبير في حساسية الغلوتين ومرض السيلياك. حلل قائمة المكونات التالية بدقة. ابحث عن أي مصدر صريح للغلوتين، أو مكون قد يكون مشتقًا من مصدر يحتوي على غلوتين، أو أي تحذير من التلوث الخلطي.
+    // ✅ 3. تحديث البرومبت ليكون ديناميكيًا
+    const prompt = `You are an expert in gluten allergies and celiac disease. Analyze the following ingredients list accurately. Look for any explicit gluten source, an ingredient that might be derived from a gluten source, or any cross-contamination warnings.
     
-    أجب بصيغة JSON فقط، وبالشكل التالي:
+    Respond ONLY with a JSON object in the following format. The explanation must be in ${responseLanguage}.
     {
-      "verdict": "ضع هنا إحدى هذه القيم: 'contains_gluten', 'may_contain_gluten', 'appears_gluten_free'",
-      "criticalIngredient": "ضع هنا اسم المكون الأخطر الذي بنيت عليه قرارك، أو 'N/A' إذا كان آمنًا",
-      "explanation": "اشرح هنا السبب بوضوح وبجملة بسيطة باللغة العربية"
+      "verdict": "one of these values: 'contains_gluten', 'may_contain_gluten', 'appears_gluten_free'",
+      "criticalIngredient": "the most critical ingredient you based your decision on, or 'N/A' if it is safe",
+      "explanation": "Explain the reason clearly and simply in ${responseLanguage}"
     }
     
-    قائمة المكونات:
+    Ingredients list:
     "${ingredientsText}"`;
 
     const response = await openai.chat.completions.create({
